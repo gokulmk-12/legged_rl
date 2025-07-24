@@ -26,25 +26,7 @@ class LeggedEnv(gym.Env):
         super(LeggedEnv, self).__init__()
 
         self.robot_name = robot_name
-
-        if robot_name == "go2":
-            xml_file = "assets/go2.xml"
-            abdction_torque_limits: list = [-0.863, 0.863]
-            hip_torque_limits: list = [-0.686, 4.501]
-            knee_torque_limits: list = [-2.818, -0.888]
-
-            self.action_space = gym.spaces.Box(
-                low = np.array(
-                    [abdction_torque_limits[0], hip_torque_limits[0], knee_torque_limits[0]]*4,
-                    dtype=np.float32,
-                ),
-                high = np.array(
-                    [abdction_torque_limits[1], hip_torque_limits[1], knee_torque_limits[1]]*4, 
-                    dtype=np.float32,
-                ),
-            )
-            self.action = np.zeros(shape=(12))
-            self.previous_action = np.zeros(shape=(12))
+        xml_file = f"assets/{robot_name}.xml"
 
         self.model = mujoco.MjModel.from_xml_path(xml_file)
         self.data = mujoco.MjData(self.model)
@@ -52,13 +34,26 @@ class LeggedEnv(gym.Env):
         self.model.opt.timestep = 0.01
 
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(95,), dtype=np.float64
+            low=-np.inf, high=np.inf, shape=(89,), dtype=np.float64
         )
+
+        self.action_low = np.array(self.model.jnt_range[1:].T[0], dtype=np.float64)
+        self.action_high = np.array(self.model.jnt_range[1:].T[1], dtype=np.float64)
+
+        self.action_space = gym.spaces.Box(
+            low = self.action_low,
+            high = self.action_high,
+            shape=(12, ), dtype=np.float64
+        )
+
+        self.action = np.zeros(shape=(12))
+        self.previous_action = np.zeros(shape=(12))
 
         self.track_commands = np.array([0.5, 0.0, 0.0])
         self.max_episode_length = 1000
         self.episode = 0
         self.steps_until_next_cmd = 0
+        self.simulate_action_latency = False
 
         self.render_mode = render_mode
 
@@ -68,24 +63,19 @@ class LeggedEnv(gym.Env):
 
         self.reward_scales = {
             ## Tracking
-            "tracking_lin_vel": 3.0,
+            "tracking_lin_vel": 2.5,
             "tracking_ang_vel": 0.8,
             ## Base
-            "lin_vel_z": -2.0,
-            "angvel_xy": -0.05,
-            "orientation": -5.0,
+            "lin_vel_z": -1.0,
+            "angvel_xy": -0.1,
+            "base_height": -50.0,
             ## Other
-            "termination": -1.0,
-            "stand_still": -0.5,
-            "default_pose": 2.0,
+            "default_pose": -0.1,
             ## Regularization
-            "torques": -0.00025,
-            "action_rate": -0.01,
-            ## Feet
-            "feet_air_time": 0.2,
+            "torques": -2e-5,
+            "action_rate": -0.1,
             ## Special
-            "tracking_sigma": 0.25,
-            "max_foot_height": 0.1,
+            "tracking_sigma": 0.05,
         }
 
         self.noise_scales = {
@@ -123,18 +113,24 @@ class LeggedEnv(gym.Env):
         for name in foot_site_names:
             self.foot_site_id.append(self.model.site(name).id)
 
-        self.torso_body_id = self.model.body("trunk").id
+        self.trunk_id = self.model.body("trunk").id
+
+        self.gyro_id = self.model.sensor("gyro").adr[0]
+        self.localvel_id = self.model.sensor("local_linvel").adr[0]
+        self.acc_id = self.model.sensor("accelerometer").adr[0]
+        self.upvector_id = self.model.sensor("upvector").adr[0]
+        self.global_linvel_id = self.model.sensor("global_linvel").adr[0]
+        self.global_angvel_id = self.model.sensor("global_angvel").adr[0]
                         
     def _get_obs(self):
-        gyro_id = self.model.sensor("gyro").adr[0]
-        gyro = self.data.sensordata[gyro_id:gyro_id+3]
+        gyro = self.data.sensordata[self.gyro_id:self.gyro_id+3]
         noisy_gyro = (
             gyro
             + (2 * np.random.uniform(size=gyro.shape)-1)
             * self.noise_scales["level"] * self.noise_scales["gyro"]
         )
 
-        gravity = self.projected_gravity()
+        gravity = self.data.sensordata[self.upvector_id: self.upvector_id]
         noisy_gravity = (
             gravity
             + (2 * np.random.uniform(size=gravity.shape)-1)
@@ -155,8 +151,7 @@ class LeggedEnv(gym.Env):
             * self.noise_scales["level"] * self.noise_scales["joint_vel"]
         )
 
-        linvel_id = self.model.sensor("local_linvel").adr[0]
-        linvel = self.data.sensordata[linvel_id:linvel_id+3]
+        linvel = self.data.sensordata[self.localvel_id:self.localvel_id+3]
         noisy_linvel = (
             linvel
             + (2 * np.random.uniform(size=linvel.shape) - 1)
@@ -173,11 +168,8 @@ class LeggedEnv(gym.Env):
             self.track_commands,
         ])
 
-        accelerometer_id = self.model.sensor("accelerometer").adr[0]
-        accelerometer = self.data.sensordata[accelerometer_id:accelerometer_id+3]
-
-        global_angvel_id = self.model.sensor("global_angvel").adr[0]
-        global_angvel = self.data.sensordata[global_angvel_id:global_angvel_id+3]
+        accelerometer = self.data.sensordata[self.acc_id:self.acc_id+3]
+        global_angvel = self.data.sensordata[self.global_angvel_id:self.global_angvel_id+3]
 
         obs = np.concatenate(
             [
@@ -205,23 +197,13 @@ class LeggedEnv(gym.Env):
         }
     
     def _get_termination(self, data):
-        upvector = self.model.sensor("upvector").adr[0]
-        fall_termination = data.sensordata[upvector: upvector+3][-1] < 0.0
-        return fall_termination
+        sleep_termination = data.xpos[self.trunk_id][-1] < 0.2
+        return sleep_termination 
     
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed, options=options)
-        qpos = self.init_pos
-        qvel = np.zeros(self.model.nv)
 
-        dxy = np.random.uniform(low=-0.5, high=0.5, size=(2, ))
-        qpos[0:2] += dxy
-
-        self.data.qpos = qpos
-        qvel[0:6] += np.random.uniform(low=-0.5, high=0.5, size=(6,))
-        self.data.qvel = qvel
-
-        # mujoco.mj_resetDataKeyframe(self.model, self.data, self.key)
+        mujoco.mj_resetDataKeyframe(self.model, self.data, self.key)
         mujoco.mj_forward(self.model, self.data)
 
         self.episode = 0
@@ -234,7 +216,8 @@ class LeggedEnv(gym.Env):
         return observation, info
     
     def step(self, action):
-        target_action = action*self.action_scale + self.default_joint_position
+        action_apply = self.previous_action if self.simulate_action_latency else action
+        target_action = action_apply*self.action_scale + self.default_joint_position
         self.data.ctrl[:] = target_action
         mujoco.mj_step(self.model, self.data)
         self.episode += 1
@@ -255,9 +238,7 @@ class LeggedEnv(gym.Env):
         info = self._get_info()
         done = self._get_termination(self.data) or bad_state
 
-        reward = self.reward(self.data, action, done, first_contact)
-        reward = reward*self.model.opt.timestep
-
+        reward = self.reward(self.data, action)
         terminated, truncated = False, False
 
         if done:
@@ -266,8 +247,8 @@ class LeggedEnv(gym.Env):
         if self.episode >= self.max_episode_length:
             truncated = True
 
-        if self.steps_until_next_cmd % 500_000 == 0:
-            self.sample_command()
+        # if self.steps_until_next_cmd % 500_000 == 0:
+        #     self.sample_command()
 
         if self.render_mode == "human":
             self.render()
@@ -277,42 +258,30 @@ class LeggedEnv(gym.Env):
         self.feet_air_time *= ~contact
         return observation, reward, terminated, truncated, info
     
-    def reward(self, data, action, done, first_contact):
+    def reward(self, data, action):
         linvel_track_penalty    = self._reward_tracking_lin_vel(data)
         angvel_track_penalty    = self._reward_tracking_ang_vel(data)
         base_linvelz_penalty    = self._reward_lin_vel_z(data)
         angvel_xy_penalty       = self._reward_angvel_xy(data)
-        orientation_penalty     = self._reward_orientation(data)
-        stand_still_penalty     = self._reward_stand_still(data.qpos[7:])
-        termination_penalty     = self._reward_termination(done)
+        base_height_penalty     = self._reward_base_height(data)
         default_pose_penalty    = self._reward_default_joint_pos(data.qpos[7:])
         joint_torque_penalty    = self._reward_motor_torque(data.actuator_force)
         action_rate_penalty     = self._reward_action_rate(action)
-        feet_air_time_penalty   = self._reward_feet_air_time(first_contact)
 
         rewards = self.reward_scales['tracking_lin_vel']    *linvel_track_penalty   + \
                 self.reward_scales['tracking_ang_vel']      *angvel_track_penalty   + \
                 self.reward_scales['lin_vel_z']             *base_linvelz_penalty   + \
                 self.reward_scales['angvel_xy']             *angvel_xy_penalty      + \
-                self.reward_scales['orientation']           *orientation_penalty    + \
-                self.reward_scales['stand_still']           *stand_still_penalty    + \
-                self.reward_scales['termination']           *termination_penalty    + \
+                self.reward_scales['base_height']           *base_height_penalty    + \
                 self.reward_scales['default_pose']          *default_pose_penalty   + \
                 self.reward_scales['torques']               *joint_torque_penalty   + \
-                self.reward_scales['action_rate']           *action_rate_penalty    + \
-                self.reward_scales['feet_air_time']         *feet_air_time_penalty 
-        
+                self.reward_scales['action_rate']           *action_rate_penalty        
         return rewards
     
     def sample_command(self):
         lin_vel_x = np.random.uniform(0.1, 1.0)
         lin_vel_y = np.random.uniform(0.1, 0.5)
         self.track_commands = np.array([lin_vel_x, lin_vel_y, 0.0])
-
-    def projected_gravity(self):
-        imu_id = self.model.site("imu").id
-        rot_matrix = self.data.site_xmat[imu_id].reshape((3, 3))
-        return rot_matrix.T @ np.array([0, 0, -1])
 
     def get_foot_contacts(self):
         touch_indices = [4, 7, 10, 13]
@@ -322,62 +291,40 @@ class LeggedEnv(gym.Env):
     ## Tracking Rewards
     
     def _reward_tracking_lin_vel(self, data):
-        local_linvel_adr = self.model.sensor("local_linvel").adr[0]
-        local_linvel = data.sensordata[local_linvel_adr: local_linvel_adr+3]
+        local_linvel = data.sensordata[self.localvel_id: self.localvel_id+3]
         lin_vel_error = np.sum(np.square(self.track_commands[:2] - local_linvel[:2]))
         return np.exp(-lin_vel_error/self.reward_scales['tracking_sigma'])
     
     def _reward_tracking_ang_vel(self, data):
-        gyro_adr = self.model.sensor("gyro").adr[0]
-        gyro = data.sensordata[gyro_adr: gyro_adr+3]
+        gyro = data.sensordata[self.gyro_id: self.gyro_id+3]
         ang_vel_error = np.square(self.track_commands[2] - gyro[2])
         return np.exp(-ang_vel_error/self.reward_scales['tracking_sigma'])
     
     ## Base Rewards
 
     def _reward_lin_vel_z(self, data):
-        global_linvel_adr = self.model.sensor("global_linvel").adr[0]
-        global_linvel = data.sensordata[global_linvel_adr: global_linvel_adr+3]
-        return np.square(global_linvel[2])
+        linvel = data.sensordata[self.localvel_id: self.localvel_id+3]
+        return np.square(linvel[2])
     
     def _reward_angvel_xy(self, data):
-        global_angvel_adr = self.model.sensor("global_angvel").adr[0]
-        global_angvel = data.sensordata[global_angvel_adr: global_angvel_adr+3]
-        return np.sum(np.square(global_angvel[:2]))
+        angvel = data.sensordata[self.gyro_id: self.gyro_id+3]
+        return np.sum(np.square(angvel[:2]))
     
-    def _reward_orientation(self, data):
-        torso_zaxis_adr = self.model.sensor("upvector").adr[0]
-        torso_zaxis = data.sensordata[torso_zaxis_adr: torso_zaxis_adr+3]
-        return np.sum(np.square(torso_zaxis[:2]))
-    
+    def _reward_base_height(self, data, base_height_target=0.304):
+        base_height = data.xpos[self.trunk_id][-1]
+        return np.square(base_height - base_height_target)
+     
     ## Regularization Rewards
 
     def _reward_motor_torque(self, torques):
-        return np.sqrt(np.sum(np.square(torques))) + np.sum(np.abs(torques))
+        return np.sum(np.abs(torques))
 
     def _reward_action_rate(self, act):
         return np.sum(np.square(act - self.previous_action))
     
     ## Other Rewards
-
     def _reward_default_joint_pos(self, qpos):
-        weight = np.array([1.0, 1.0, 0.1] * 4)
-        return np.exp(-np.sum(np.square(qpos - self.default_joint_position) * weight))
-    
-    def _reward_stand_still(self, qpos):
-        cmd_norm = np.linalg.norm(self.track_commands)
-        return np.sum(np.abs(qpos - self.default_joint_position)) * (cmd_norm < 0.01)
-
-    def _reward_termination(self, done):
-        return done
-    
-    ## Feet Rewards
-    def _reward_feet_air_time(self, first_contact):
-        desired_air_time = 0.1
-        cmd_norm = np.linalg.norm(self.track_commands)
-        rew_airtime = np.sum((self.feet_air_time - desired_air_time)*first_contact)
-        rew_airtime *= cmd_norm > 0.01
-        return rew_airtime
+        return np.sum(np.abs(qpos - self.default_joint_position))
     
     def render(self):
         if self.viewer.is_alive:
@@ -394,9 +341,11 @@ class LeggedEnv(gym.Env):
 
 if __name__ == "__main__":
     env = LeggedEnv(robot_name="go2", task_name="walking", render_mode="human")
-
     obs, info = env.reset()
   
     while True:
         action = env.action_space.sample()
         state, reward, done, _, _ = env.step(action)
+        print(f"Reward: {reward}")
+        if done:
+            obs, info = env.reset()

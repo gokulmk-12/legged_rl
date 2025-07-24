@@ -32,17 +32,18 @@ class RolloutBuffer:
         del self.is_terminals[:]
 
 class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim, action_dim, action_low, action_high):
         super(ActorCritic, self).__init__()
 
         self.action_dim = action_dim
+        self.action_low = torch.tensor(action_low, dtype=torch.float32).to(device)
+        self.action_high = torch.tensor(action_high, dtype=torch.float32).to(device)
+        
         self.action_var = torch.full((action_dim,), fill_value=0.5).to(device)
-        self.cov_mat = torch.diag(self.action_var)
+        self.actor_std = torch.diag(self.action_var)
 
         self.actor = nn.Sequential(
-            nn.Linear(state_dim, 256),
-            nn.Tanh(),
-            nn.Linear(256, 128),
+            nn.Linear(state_dim, 128),
             nn.Tanh(),
             nn.Linear(128, 64),
             nn.Tanh(),
@@ -50,9 +51,7 @@ class ActorCritic(nn.Module):
         )
         
         self.critic = nn.Sequential(
-            nn.Linear(state_dim, 256),
-            nn.Tanh(),
-            nn.Linear(256, 128),
+            nn.Linear(state_dim, 128),
             nn.Tanh(),
             nn.Linear(128, 64),
             nn.Tanh(),
@@ -61,20 +60,28 @@ class ActorCritic(nn.Module):
         
     def forward(self):
         return NotImplementedError
+    
+    def _get_dist(self, action_mean):
+        cov_mat = torch.diag(self.action_var).to(action_mean.device)
+        return MultivariateNormal(action_mean, cov_mat)
+    
+    def _scale_action(self, squashed):
+        return self.action_low + 0.5 * (squashed + 1.0) * (self.action_high - self.action_low)
  
     def act(self, state):
         action_mean = self.actor(state)
-        dist = MultivariateNormal(action_mean, self.cov_mat)
+        dist = self._get_dist(action_mean)
 
-        action = dist.sample()
-        action_logprob = dist.log_prob(action)
+        raw_action = dist.rsample()
+        action_logprob = dist.log_prob(raw_action)
         state_val = self.critic(state)
 
+        action = self._scale_action(torch.tanh(raw_action))
         return action.detach(), action_logprob.detach(), state_val.detach()
 
     def evaluate(self, state, action):
         action_mean = self.actor(state)
-        dist = MultivariateNormal(action_mean, self.cov_mat)
+        dist = self._get_dist(action_mean)
 
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
@@ -87,6 +94,8 @@ class PPO:
             self, 
             state_dim, 
             action_dim, 
+            action_low,
+            action_high,
             K_epochs=10,
             learning_rate=1e-3, 
             gamma=0.998,  
@@ -108,7 +117,7 @@ class PPO:
 
         self.buffer = RolloutBuffer()
 
-        self.policy = ActorCritic(state_dim, action_dim).to(device)
+        self.policy = ActorCritic(state_dim, action_dim, action_low, action_high).to(device)
         self.optimizer  =torch.optim.Adam([
             {'params': self.policy.actor.parameters(), 'lr':learning_rate},
             {'params': self.policy.critic.parameters(), 'lr':learning_rate}
@@ -116,7 +125,7 @@ class PPO:
 
         self.learning_rate = learning_rate
 
-        self.policy_old = ActorCritic(state_dim, action_dim).to(device)
+        self.policy_old = ActorCritic(state_dim, action_dim, action_low, action_high).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
         self.mse_loss = nn.MSELoss()

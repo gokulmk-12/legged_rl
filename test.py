@@ -27,18 +27,21 @@ def test():
     env = LeggedEnv(robot_name="go2", task_name="walking", render_mode="human")
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    action_low, action_high = env.action_low, env.action_high
 
     ppo_agent = PPO(
         state_dim, 
         action_dim,
+        action_low,
+        action_high,
         K_epochs,
         learning_rate,
         gamma,
         clip_param,
-        value_loss_coef=0.5,
+        value_loss_coef=1.0,
         entropy_coef=0.01,
         max_grad_norm=1.0,
-        schedule="adaptive")
+        schedule="fixed")
 
     weights_dir = f"PPO_pretrained/{env_name}/"
     checkpoint_path = weights_dir + "/PPO_go2-walking.pth"

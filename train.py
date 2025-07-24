@@ -35,18 +35,21 @@ def train():
     env = LeggedEnv(render_mode="non-human")
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    action_low, action_high = env.action_low, env.action_high
 
     ppo_agent = PPO(
         state_dim, 
         action_dim,
+        action_low,
+        action_high,
         K_epochs,
         learning_rate,
         gamma,
         clip_param,
-        value_loss_coef=0.5,
+        value_loss_coef=1.0,
         entropy_coef=0.01,
         max_grad_norm=1.0,
-        schedule="fixed")
+        schedule="adaptive")
 
     console.print(f"[Mujoco-Training] [{timestamp()}] Training Environment Name: {env_name}", style="magenta")
 

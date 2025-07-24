@@ -233,6 +233,7 @@
   <sensor>
     <gyro site="imu" name="gyro"/>
     <accelerometer site="imu" name="accelerometer"/>
+    <velocimeter site="imu" name="local_linvel"/>
     <framequat objtype="site" objname="imu" name="orientation"/>
     <framepos objtype="site" objname="imu" name="global_position"/>
     <framezaxis objtype="site" objname="imu" name="upvector"/>
@@ -243,7 +244,6 @@
     <framelinvel objtype="site" objname="FL_foot" name="FL_global_linvel"/>
     <framelinvel objtype="site" objname="RR_foot" name="RR_global_linvel"/>
     <framelinvel objtype="site" objname="RL_foot" name="RL_global_linvel"/>
-    <velocimeter site="imu" name="local_linvel"/>
     <touch name="FR_touch" site="FR_foot"/>
     <touch name="FL_touch" site="FL_foot"/>
     <touch name="RR_touch" site="RR_foot"/>
@@ -252,12 +252,12 @@
 
   <keyframe>
     <key name="home" 
-    qpos="0 0 0.35 
+    qpos="0 0 0.304 
     1 0 0 0 
-    0.1 0.9 -1.7 
-    -0.1 0.9 -1.7 
-    0.1 0.9 -1.7 
-    -0.1 0.9 -1.7"
-    ctrl="0.1 0.9 -1.7 -0.1 0.9 -1.7 0.1 0.9 -1.7 -0.1 0.9 -1.7"/>
+    0. 0.8 -1.5 
+    0. 0.8 -1.5 
+    0. 1.0 -1.5 
+    0. 1.0 -1.5"
+    ctrl="0. 0.8 -1.5 0. 0.8 -1.5 0. 1.0 -1.5 0. 1.0 -1.5"/>
   </keyframe>
 </mujoco>
