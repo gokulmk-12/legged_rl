@@ -1,38 +1,96 @@
 import os
 import torch
+import numpy as np
 from stable_baselines3 import PPO
-from stable_baselines3.common.logger import configure
-from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
+from collections import defaultdict
+from stable_baselines3.common.logger import configure, Logger
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 
 from leggedEnv import LeggedEnv
 
-exp_no = 2
-log_dir = f"logs/PPO_GO2_Exp{exp_no}"
-os.makedirs(log_dir, exist_ok=True)
+class TensorboardCallback(BaseCallback):
+    def __init__(self, verbose = 0):
+        super(TensorboardCallback, self).__init__(verbose)
 
-env = LeggedEnv(robot_name="go2", render_mode="non-human")
-obs, _ = env.reset()
+    def _on_step(self)->bool:
+        infos = self.locals["infos"]
+        unwanted = "TimeLimit.truncated"
+        reward_sums = defaultdict(list)
 
-new_logger = configure(log_dir, ["stdout", "tensorboard"])
+        for info in infos:
+            for k, v in info.items():
+                if k != unwanted:
+                    reward_sums[k].append(v)
+        
+        for k, v_list in reward_sums.items():
+            self.logger.record(f'rewards/{k}', np.mean(v_list))
 
-weights_path = os.path.join(log_dir, "ppo_go2_final.zip")
-if os.path.exists(weights_path):
-    print(f"Loading model from {weights_path}")
-    model = PPO.load(weights_path, env=env, device="cuda" if torch.cuda.is_available() else "cpu")
-else:
-    print("No saved model found, initializing new PPO model")
-    model = PPO(
-        "MlpPolicy",
-        env,
-        verbose=0,
-        tensorboard_log=log_dir,
-        device="cuda" if torch.cuda.is_available() else "cpu"
+        return True
+
+def make_env(robot_name="go2", render_mode="non-human", rank=0):
+    def _init():
+        env = LeggedEnv(robot_name=robot_name, render_mode=render_mode)
+        env.reset(rank)
+        return env
+    return _init
+
+def train():
+    exp_no = 3
+    log_dir = f"logs/PPO_GO2_Exp{exp_no}"
+    os.makedirs(log_dir, exist_ok=True)
+
+    num_envs = 16
+    
+    if num_envs == 1:
+        env = DummyVecEnv([make_env()])
+    else:
+        env = SubprocVecEnv(
+            [make_env(rank=i) for i in range(num_envs)],
+            start_method='spawn'
+        )
+
+    env = VecNormalize(env, norm_obs=True, norm_reward=True)
+
+    new_logger = configure(log_dir, ["stdout", "tensorboard"])
+
+    weights_path = os.path.join(log_dir, "ppo_go2_final.zip")
+    vec_normalize_path = os.path.join(log_dir, "vec_normalize.pkl")
+
+    if os.path.exists(weights_path) and os.path.exists(vec_normalize_path):
+        print(f"Loading model and normalization from {log_dir}")
+        env = VecNormalize.load(vec_normalize_path, env)
+        model = PPO.load(weights_path, env=env, device="cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        print("Initializing new PPO model")
+        model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            tensorboard_log=log_dir,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            n_steps=2048 // num_envs,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            ent_coef=0.01,
+            max_grad_norm=1.0,
+            learning_rate=1e-3,
+        )
+        model.set_logger(new_logger)
+
+    model.learn(
+        total_timesteps=5_000_000,
+        progress_bar=True,
+        reset_num_timesteps=False,
+        callback=TensorboardCallback()
     )
-model.set_logger(new_logger)
 
-model.learn(
-    total_timesteps=20_000_000,
-    progress_bar=True
-)
+    model.save(os.path.join(log_dir, "ppo_go2_final"))
+    env.save(os.path.join(log_dir, "vec_normalize.pkl"))
 
-model.save(os.path.join(log_dir, "ppo_go2_final"))
+if __name__ == '__main__':
+    from multiprocessing import freeze_support
+    freeze_support()
+    train()

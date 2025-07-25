@@ -8,6 +8,8 @@ from typing import Optional
 from datetime import datetime
 from rich.console import Console
 
+from rewards import *
+
 from scipy.spatial.transform import Rotation as R
 
 def timestamp():
@@ -52,6 +54,7 @@ class LeggedEnv(gym.Env):
         self.track_commands = np.array([0.5, 0.0, 0.0])
         self.max_episode_length = 1000
         self.episode = 0
+        self.info = {}
         self.steps_until_next_cmd = 0
         self.simulate_action_latency = False
 
@@ -62,20 +65,14 @@ class LeggedEnv(gym.Env):
             self._init_viewer_config()
 
         self.reward_scales = {
-            ## Tracking
-            "tracking_lin_vel": 2.5,
-            "tracking_ang_vel": 0.8,
-            ## Base
-            "lin_vel_z": -1.0,
-            "angvel_xy": -0.1,
-            "base_height": -50.0,
-            ## Other
-            "default_pose": -0.1,
-            ## Regularization
-            "torques": -2e-5,
-            "action_rate": -0.1,
-            ## Special
-            "tracking_sigma": 0.05,
+            "tracking_lin_vel": 1.0,
+            "tracking_ang_vel": 0.5,
+            "lin_vel_z": 0.2,
+            "angvel_xy": 0.1,
+            "base_height": 5.0,
+            "torques": 1e-5,
+            "action_rate": 0.05,
+            "tracking_sigma": 0.3,
         }
 
         self.noise_scales = {
@@ -187,15 +184,6 @@ class LeggedEnv(gym.Env):
         )
         return obs
     
-    def _get_info(self):
-        base_pos = self.data.xpos[1]
-
-        return {
-            "distance": np.linalg.norm(
-                base_pos, ord=2
-            )
-        }
-    
     def _get_termination(self, data):
         sleep_termination = data.xpos[self.trunk_id][-1] < 0.2
         return sleep_termination 
@@ -212,8 +200,7 @@ class LeggedEnv(gym.Env):
         self.previous_action = np.zeros(shape=(12))
 
         observation = self._get_obs()
-        info = self._get_info()
-        return observation, info
+        return observation, {}
     
     def step(self, action):
         action_apply = self.previous_action if self.simulate_action_latency else action
@@ -235,20 +222,22 @@ class LeggedEnv(gym.Env):
         bad_state = True if abs(roll) > self.roll_threshold or abs(pitch) > self.pitch_threshold else False
 
         observation = self._get_obs()
-        info = self._get_info()
         done = self._get_termination(self.data) or bad_state
 
-        reward = self.reward(self.data, action)
+        reward, info = self.reward(self.data, action)
         terminated, truncated = False, False
 
+        # if done:
+        #     terminated = True
+
         if done:
-            terminated = True
+            reward -= 10.0
 
         if self.episode >= self.max_episode_length:
-            truncated = True
+            truncated, terminated = True, True
 
-        # if self.steps_until_next_cmd % 500_000 == 0:
-        #     self.sample_command()
+        if self.steps_until_next_cmd % 500_000 == 0:
+            self.sample_command()
 
         if self.render_mode == "human":
             self.render()
@@ -259,24 +248,32 @@ class LeggedEnv(gym.Env):
         return observation, reward, terminated, truncated, info
     
     def reward(self, data, action):
-        linvel_track_penalty    = self._reward_tracking_lin_vel(data)
-        angvel_track_penalty    = self._reward_tracking_ang_vel(data)
-        base_linvelz_penalty    = self._reward_lin_vel_z(data)
-        angvel_xy_penalty       = self._reward_angvel_xy(data)
-        base_height_penalty     = self._reward_base_height(data)
-        default_pose_penalty    = self._reward_default_joint_pos(data.qpos[7:])
-        joint_torque_penalty    = self._reward_motor_torque(data.actuator_force)
-        action_rate_penalty     = self._reward_action_rate(action)
+        linvel_track        = reward_tracking_lin_vel(data, self.localvel_id, self.track_commands, self.reward_scales)
+        angvel_track        = reward_tracking_ang_vel(data, self.gyro_id, self.track_commands, self.reward_scales)
+        base_linvelz        = reward_lin_vel_z(data, self.localvel_id)
+        angvel_xy           = reward_angvel_xy(data, self.gyro_id)
+        base_height         = reward_base_height(data, self.trunk_id)
+        joint_torque        = reward_motor_torque(data.actuator_force)
+        action_smoothness   = reward_action_smoothness(action, self.previous_action)
 
-        rewards = self.reward_scales['tracking_lin_vel']    *linvel_track_penalty   + \
-                self.reward_scales['tracking_ang_vel']      *angvel_track_penalty   + \
-                self.reward_scales['lin_vel_z']             *base_linvelz_penalty   + \
-                self.reward_scales['angvel_xy']             *angvel_xy_penalty      + \
-                self.reward_scales['base_height']           *base_height_penalty    + \
-                self.reward_scales['default_pose']          *default_pose_penalty   + \
-                self.reward_scales['torques']               *joint_torque_penalty   + \
-                self.reward_scales['action_rate']           *action_rate_penalty        
-        return rewards
+        rewards = self.reward_scales['tracking_lin_vel']    *linvel_track   + \
+                self.reward_scales['tracking_ang_vel']      *angvel_track   + \
+                self.reward_scales['lin_vel_z']             *base_linvelz   + \
+                self.reward_scales['angvel_xy']             *angvel_xy      + \
+                self.reward_scales['base_height']           *base_height    + \
+                self.reward_scales['torques']               *joint_torque   + \
+                self.reward_scales['action_rate']           *action_smoothness        
+        
+        info = {
+            "reward_tracking_linvel": self.reward_scales['tracking_lin_vel']*linvel_track,
+            "reward_tracking_angvel": self.reward_scales['tracking_ang_vel']*angvel_track,
+            "reward_linvel_z": self.reward_scales['lin_vel_z']*base_linvelz,
+            "reward_angvel_xy": self.reward_scales['angvel_xy']*angvel_xy,
+            "reward_base_height": self.reward_scales['base_height']*base_height,
+            "reward_torques": self.reward_scales['torques']*joint_torque,
+            "reward_acton_smoothness": self.reward_scales['action_rate']*action_smoothness,
+        }
+        return rewards, info
     
     def sample_command(self):
         lin_vel_x = np.random.uniform(0.1, 1.0)
@@ -287,45 +284,7 @@ class LeggedEnv(gym.Env):
         touch_indices = [4, 7, 10, 13]
         feet_contact_forces = self.data.cfrc_ext[touch_indices]
         return np.linalg.norm(feet_contact_forces, axis=1)
-    
-    ## Tracking Rewards
-    
-    def _reward_tracking_lin_vel(self, data):
-        local_linvel = data.sensordata[self.localvel_id: self.localvel_id+3]
-        lin_vel_error = np.sum(np.square(self.track_commands[:2] - local_linvel[:2]))
-        return np.exp(-lin_vel_error/self.reward_scales['tracking_sigma'])
-    
-    def _reward_tracking_ang_vel(self, data):
-        gyro = data.sensordata[self.gyro_id: self.gyro_id+3]
-        ang_vel_error = np.square(self.track_commands[2] - gyro[2])
-        return np.exp(-ang_vel_error/self.reward_scales['tracking_sigma'])
-    
-    ## Base Rewards
-
-    def _reward_lin_vel_z(self, data):
-        linvel = data.sensordata[self.localvel_id: self.localvel_id+3]
-        return np.square(linvel[2])
-    
-    def _reward_angvel_xy(self, data):
-        angvel = data.sensordata[self.gyro_id: self.gyro_id+3]
-        return np.sum(np.square(angvel[:2]))
-    
-    def _reward_base_height(self, data, base_height_target=0.304):
-        base_height = data.xpos[self.trunk_id][-1]
-        return np.square(base_height - base_height_target)
-     
-    ## Regularization Rewards
-
-    def _reward_motor_torque(self, torques):
-        return np.sum(np.abs(torques))
-
-    def _reward_action_rate(self, act):
-        return np.sum(np.square(act - self.previous_action))
-    
-    ## Other Rewards
-    def _reward_default_joint_pos(self, qpos):
-        return np.sum(np.abs(qpos - self.default_joint_position))
-    
+      
     def render(self):
         if self.viewer.is_alive:
             self.viewer.render()
@@ -346,6 +305,5 @@ if __name__ == "__main__":
     while True:
         action = env.action_space.sample()
         state, reward, done, _, _ = env.step(action)
-        print(f"Reward: {reward}")
         if done:
             obs, info = env.reset()

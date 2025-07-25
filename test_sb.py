@@ -6,7 +6,7 @@ from leggedEnv import LeggedEnv
 env = LeggedEnv(robot_name="go2", task_name="walking", render_mode="human")
 obs, _ = env.reset()
 
-exp_no = 1
+exp_no = 3
 algo = "PPO"
 model_path = f"logs/{algo}_GO2_Exp{exp_no}/{algo.lower()}_go2_final"
 if algo == "PPO":
@@ -18,9 +18,9 @@ for i in range(10):
     done, total_reward = False, 0.0
     while not done:
         action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, _, _ = env.step(action)
+        obs, reward, done, truncated, _ = env.step(action)
         total_reward += reward
-        if done:
+        if done or truncated:
             obs, _ = env.reset()
             break
 
