@@ -74,9 +74,9 @@ def train():
             n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
-            ent_coef=0.03,
+            ent_coef=0.025,
             max_grad_norm=0.5,
-            learning_rate=3e-4,
+            learning_rate=1e-4,
             clip_range=0.2,
             vf_coef=0.5,
             clip_range_vf=0.2
@@ -99,7 +99,7 @@ def train():
     ])
 
     model.learn(
-        total_timesteps=10_000_000,
+        total_timesteps=5_000_000,
         progress_bar=True,
         reset_num_timesteps=False,
         callback=callback_list

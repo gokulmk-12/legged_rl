@@ -9,7 +9,6 @@ obs, _ = env.reset()
 exp_no = 3
 algo = "PPO"
 model_path = f"logs/{algo}_GO2_Exp{exp_no}/{algo.lower()}_go2_final"
-model_path = f"logs/{algo}_GO2_Exp{exp_no}/{algo.lower()}_go2_checkpoint_4000000_steps"
 if algo == "PPO":
     model = PPO.load(model_path, env=env, device="cuda" if torch.cuda.is_available() else "cpu")
 elif algo == "SAC":

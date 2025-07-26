@@ -1,4 +1,4 @@
-PPO Experiment 2
+PPO Experiment 3
 
 Total Timesteps: 5M
 Number of parallel environments: 16
@@ -51,29 +51,25 @@ Rewards:
 
     self.reward_scales = {
             "tracking_lin_vel": 2.0,
-            "tracking_ang_vel": 0.5,
+            "tracking_ang_vel": 1.0,
             "lin_vel_z": 0.2,
             "angvel_xy": 0.2,
             "base_height": 6.0,
-            "torques": 1e-4,
+            "torques": 5e-4,
             "action_rate": 0.2,
             "tracking_sigma": 0.25,
-            "acceleration": 1e-6,
+            "acceleration": 5e-6,
             "feet_air_time": 0.5,
             "default_pose": 0.2,
             "orientation": 1.0,
-            "energy": 1e-4,
+            "energy": 1e-3,
         }
 
 What I observed ?
-    * Still jittery motion, it tried to gallop, but the pitch was signifcantly higher which led it terminate
+    * Still jittery motion, it tried to gallop again, but too much Termination
     * Good progress, but the base stability has to be considered. 
-    * May be increase the number of Timesteps to train
+    * Unstable stable baseline 3 training
 
 Changes
-    * increasing angvel tracking scale to 1.0
-    * increasing entropy coefficient in PPO to 0.03
-    * increasing torque scale to 5e-4
-    * increasing acceleration scale to 5e-6
-    * increasing energy scale to 1e-3
-    * training the environment for 10 M Timesteps
+    * decreasing entropy coefficient in PPO to 0.025
+    * decreasing learning rate to 1e-4
