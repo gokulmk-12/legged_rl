@@ -10,8 +10,6 @@ from rich.console import Console
 
 from rewards import *
 
-from scipy.spatial.transform import Rotation as R
-
 def timestamp():
     return datetime.now().strftime("%H:%M:%S")
 
@@ -34,13 +32,17 @@ class LeggedEnv(gym.Env):
         self.data = mujoco.MjData(self.model)
         self.key = self.model.key("home").id
         self.model.opt.timestep = 0.01
+        self.ctrl_dt = 0.02
 
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(89,), dtype=np.float64
         )
 
-        self.action_low = np.array(self.model.jnt_range[1:].T[0], dtype=np.float64)
-        self.action_high = np.array(self.model.jnt_range[1:].T[1], dtype=np.float64)
+        # self.action_low = np.array(self.model.jnt_range[1:].T[0], dtype=np.float64)
+        # self.action_high = np.array(self.model.jnt_range[1:].T[1], dtype=np.float64)
+
+        self.action_low = np.array([-0.3, 0.3, -1.9]*4)
+        self.action_high = np.array([0.3, 1.15, -1.2]*4)
 
         self.action_space = gym.spaces.Box(
             low = self.action_low,
@@ -65,14 +67,19 @@ class LeggedEnv(gym.Env):
             self._init_viewer_config()
 
         self.reward_scales = {
-            "tracking_lin_vel": 1.0,
-            "tracking_ang_vel": 0.5,
+            "tracking_lin_vel": 2.0,
+            "tracking_ang_vel": 1.0,
             "lin_vel_z": 0.2,
-            "angvel_xy": 0.1,
-            "base_height": 5.0,
-            "torques": 1e-5,
-            "action_rate": 0.05,
-            "tracking_sigma": 0.3,
+            "angvel_xy": 0.2,
+            "base_height": 6.0,
+            "torques": 5e-4,
+            "action_rate": 0.2,
+            "tracking_sigma": 0.25,
+            "acceleration": 5e-6,
+            "feet_air_time": 0.5,
+            "default_pose": 0.2,
+            "orientation": 1.0,
+            "energy": 1e-3,
         }
 
         self.noise_scales = {
@@ -87,7 +94,7 @@ class LeggedEnv(gym.Env):
         console.print(f"[Mujoco-Env] [{timestamp()}] Welcome to Legged Mujoco", style="green")
         console.print(f"[Mujoco-Env] [{timestamp()}] Robot: {robot_name}, Task: {task_name}", style="green")
 
-        self.action_scale = 0.25
+        self.action_scale = 0.0
         self.roll_threshold = 15
         self.pitch_threshold = 15
 
@@ -106,6 +113,7 @@ class LeggedEnv(gym.Env):
     
     def _get_indices(self):
         self.foot_site_id = []
+        self.leg_names = ["FR", "FL", "RR", "RL"]
         foot_site_names = ["FR_foot", "FL_foot", "RR_foot", "RL_foot"]
         for name in foot_site_names:
             self.foot_site_id.append(self.model.site(name).id)
@@ -196,7 +204,7 @@ class LeggedEnv(gym.Env):
 
         self.episode = 0
         self.feet_air_time = np.zeros(4)
-        self.last_contacts = np.zeros(4, dtype=bool)
+        self.last_contacts = np.ones(4, dtype=bool)
         self.previous_action = np.zeros(shape=(12))
 
         observation = self._get_obs()
@@ -205,39 +213,37 @@ class LeggedEnv(gym.Env):
     def step(self, action):
         action_apply = self.previous_action if self.simulate_action_latency else action
         target_action = action_apply*self.action_scale + self.default_joint_position
+        target_action = action_apply
         self.data.ctrl[:] = target_action
         mujoco.mj_step(self.model, self.data)
         self.episode += 1
         self.steps_until_next_cmd += 1
 
-        contact = self.get_foot_contacts() > 1.0
+        contact = self.get_foot_contacts()
         contact_filt = contact | self.last_contacts
         first_contact = (self.feet_air_time > 0.) * contact_filt
-        self.feet_air_time += self.model.opt.timestep
+        self.feet_air_time += self.ctrl_dt
         p_f = self.data.site_xpos[self.foot_site_id]
         p_fz = p_f[..., -1]
 
-        r = R.from_quat([self.data.xquat[1][1], self.data.xquat[1][2], self.data.xquat[1][3], self.data.xquat[1][0]])
-        roll, pitch, _ = r.as_euler('xyz', degrees=True)
-        bad_state = True if abs(roll) > self.roll_threshold or abs(pitch) > self.pitch_threshold else False
+        w, x, y, z = self.data.qpos[3:7]
+        roll, pitch, _ = euler_from_quaternion(w, x, y, z)
+        bad_state = True if abs(roll) > np.deg2rad(self.roll_threshold) or abs(pitch) > np.deg2rad(self.pitch_threshold) else False
 
         observation = self._get_obs()
         done = self._get_termination(self.data) or bad_state
 
-        reward, info = self.reward(self.data, action)
+        reward, info = self.reward(self.data, action, first_contact)
         terminated, truncated = False, False
 
-        # if done:
-        #     terminated = True
-
         if done:
-            reward -= 10.0
+            terminated = True
 
         if self.episode >= self.max_episode_length:
             truncated, terminated = True, True
 
-        if self.steps_until_next_cmd % 500_000 == 0:
-            self.sample_command()
+        # if self.steps_until_next_cmd % 500_000 == 0:
+        #     self.sample_command()
 
         if self.render_mode == "human":
             self.render()
@@ -247,43 +253,61 @@ class LeggedEnv(gym.Env):
         self.feet_air_time *= ~contact
         return observation, reward, terminated, truncated, info
     
-    def reward(self, data, action):
+    def reward(self, data, action, first_contact):
         linvel_track        = reward_tracking_lin_vel(data, self.localvel_id, self.track_commands, self.reward_scales)
         angvel_track        = reward_tracking_ang_vel(data, self.gyro_id, self.track_commands, self.reward_scales)
         base_linvelz        = reward_lin_vel_z(data, self.localvel_id)
         angvel_xy           = reward_angvel_xy(data, self.gyro_id)
         base_height         = reward_base_height(data, self.trunk_id)
-        joint_torque        = reward_motor_torque(data.actuator_force)
+        joint_torque        = reward_motor_torque(data.qfrc_actuator[-12:])
         action_smoothness   = reward_action_smoothness(action, self.previous_action)
+        joint_acceleration  = reward_joint_acceleration(data)
+        feet_air_time       = reward_feet_airtime(self.feet_air_time, first_contact, self.track_commands)
+        default_pose        = reward_default_pose(data, self.default_joint_position)
+        orientation         = reward_orientation(data)
+        energy              = reward_energy(data, data.qfrc_actuator[-12:])
 
-        rewards = self.reward_scales['tracking_lin_vel']    *linvel_track   + \
-                self.reward_scales['tracking_ang_vel']      *angvel_track   + \
-                self.reward_scales['lin_vel_z']             *base_linvelz   + \
-                self.reward_scales['angvel_xy']             *angvel_xy      + \
-                self.reward_scales['base_height']           *base_height    + \
-                self.reward_scales['torques']               *joint_torque   + \
-                self.reward_scales['action_rate']           *action_smoothness        
+        positive_rewards = self.reward_scales['tracking_lin_vel']    *linvel_track       + \
+                self.reward_scales['tracking_ang_vel']               *angvel_track       + \
+                self.reward_scales['feet_air_time']                  *feet_air_time
         
+        negative_rewards = self.reward_scales['lin_vel_z']  *base_linvelz       + \
+                self.reward_scales['angvel_xy']             *angvel_xy          + \
+                self.reward_scales['base_height']           *base_height        + \
+                self.reward_scales['torques']               *joint_torque       + \
+                self.reward_scales['acceleration']          *joint_acceleration + \
+                self.reward_scales['action_rate']           *action_smoothness  + \
+                self.reward_scales['default_pose']          *default_pose       + \
+                self.reward_scales['orientation']           *orientation        + \
+                self.reward_scales['energy']                *energy
+        
+        rewards = positive_rewards * np.exp(0.02 * negative_rewards)
+
         info = {
-            "reward_tracking_linvel": self.reward_scales['tracking_lin_vel']*linvel_track,
-            "reward_tracking_angvel": self.reward_scales['tracking_ang_vel']*angvel_track,
-            "reward_linvel_z": self.reward_scales['lin_vel_z']*base_linvelz,
-            "reward_angvel_xy": self.reward_scales['angvel_xy']*angvel_xy,
-            "reward_base_height": self.reward_scales['base_height']*base_height,
-            "reward_torques": self.reward_scales['torques']*joint_torque,
-            "reward_acton_smoothness": self.reward_scales['action_rate']*action_smoothness,
+            "reward_tracking_linvel":   linvel_track,
+            "reward_tracking_angvel":   angvel_track,
+            "reward_linvel_z":          base_linvelz,
+            "reward_angvel_xy":         angvel_xy,
+            "reward_base_height":       base_height,
+            "reward_torques":           joint_torque,
+            "reward_acceleration":      joint_acceleration,
+            "reward_acton_smoothness":  action_smoothness,
+            "reward_feet_airtime":      feet_air_time,
+            "reward_default_pose":      default_pose,
+            "reward_orientation":       orientation,
+            "reward_energy":            energy,
         }
         return rewards, info
     
     def sample_command(self):
-        lin_vel_x = np.random.uniform(0.1, 1.0)
+        lin_vel_x = np.random.uniform(-1.0, 1.0)
         lin_vel_y = np.random.uniform(0.1, 0.5)
-        self.track_commands = np.array([lin_vel_x, lin_vel_y, 0.0])
+        self.track_commands = np.array([lin_vel_x, 0.0, 0.0])
 
     def get_foot_contacts(self):
-        touch_indices = [4, 7, 10, 13]
-        feet_contact_forces = self.data.cfrc_ext[touch_indices]
-        return np.linalg.norm(feet_contact_forces, axis=1)
+        touch_sensors = [self.model.sensor(f"{leg_name}_touch").adr[0] for leg_name in self.leg_names]
+        contact_values = [bool(self.data.sensordata[touch_sensors[i]] > 0.0) for i in range(4)]
+        return np.array(contact_values)
       
     def render(self):
         if self.viewer.is_alive:

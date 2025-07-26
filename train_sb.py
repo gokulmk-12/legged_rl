@@ -3,9 +3,9 @@ import torch
 import numpy as np
 from stable_baselines3 import PPO
 from collections import defaultdict
-from stable_baselines3.common.logger import configure, Logger
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, CallbackList
 
 from leggedEnv import LeggedEnv
 
@@ -74,17 +74,35 @@ def train():
             n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
-            ent_coef=0.01,
-            max_grad_norm=1.0,
-            learning_rate=1e-3,
+            ent_coef=0.03,
+            max_grad_norm=0.5,
+            learning_rate=3e-4,
+            clip_range=0.2,
+            vf_coef=0.5,
+            clip_range_vf=0.2
         )
         model.set_logger(new_logger)
 
+    desired_checkpoint_interval = 1_000_000
+    save_freq = max(desired_checkpoint_interval // num_envs, 1)
+    
+    checkpoint_callback = CheckpointCallback(
+        save_freq=save_freq,
+        save_path=log_dir,
+        name_prefix="ppo_go2_checkpoint",
+        save_vecnormalize=True
+    )
+
+    callback_list = CallbackList([
+        TensorboardCallback(),
+        checkpoint_callback,
+    ])
+
     model.learn(
-        total_timesteps=5_000_000,
+        total_timesteps=10_000_000,
         progress_bar=True,
         reset_num_timesteps=False,
-        callback=TensorboardCallback()
+        callback=callback_list
     )
 
     model.save(os.path.join(log_dir, "ppo_go2_final"))

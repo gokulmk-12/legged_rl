@@ -1,4 +1,4 @@
-PPO Experiment 2
+PPO Experiment 1
 
 Total Timesteps: 5M
 Number of parallel environments: 16
@@ -53,28 +53,27 @@ Rewards:
             "tracking_lin_vel": 2.0,
             "tracking_ang_vel": 0.5,
             "lin_vel_z": 0.2,
-            "angvel_xy": 0.2,
-            "base_height": 6.0,
-            "torques": 1e-4,
-            "action_rate": 0.2,
+            "angvel_xy": 0.1,
+            "base_height": 8.0,
+            "torques": 5e-5,
+            "action_rate": 0.1,
             "tracking_sigma": 0.25,
-            "acceleration": 1e-6,
-            "feet_air_time": 0.5,
+            "acceleration": 2.5e-7,
+            "feet_air_time": 0.25,
             "default_pose": 0.2,
             "orientation": 1.0,
             "energy": 1e-4,
         }
 
 What I observed ?
-    * Still jittery motion, it tried to gallop, but the pitch was signifcantly higher which led it terminate
-    * Good progress, but the base stability has to be considered. 
-    * May be increase the number of Timesteps to train
+    * Very jittery motion, no proper gait was tracked, but the body moved forward
+    * The feets didnt really lift, and the feet_air_time reward was negative, which should be positive.
 
 Changes
     * Removing the -0.1 from feet_air_time reward, increasing scale to 0.5
-    * increasing angvel tracking scale to 1.0
-    * increasing entropy coefficient in PPO to 0.03
-    * increasing torque scale to 5e-4
-    * increasing acceleration scale to 5e-6
-    * increasing energy scale to 1e-3
-    * training the environment for 10 M Timesteps
+    * increasing entropy coefficient in PPO to 0.02
+    * increasing torque scale to 1e-4
+    * increasing acceleration scale to 1e-6
+    * increasing action rate scale to 0.2
+    * decreasing base_height scale to 6.0
+

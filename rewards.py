@@ -1,5 +1,21 @@
 import numpy as np
 
+def euler_from_quaternion(w, x, y, z):
+    t0 = +2.0 * (w * x + y * z)
+    t1 = +1.0 - 2.0 * (x * x + y * y)
+    roll_x = np.arctan2(t0, t1)
+
+    t2 = +2.0 * (w * y - z * x)
+    t2 = +1.0 if t2 > +1.0 else t2
+    t2 = -1.0 if t2 < -1.0 else t2
+    pitch_y = np.arcsin(t2)
+
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+    yaw_z = np.arctan2(t3, t4)
+
+    return roll_x, pitch_y, yaw_z
+
 def reward_tracking_lin_vel(data, localvel_id, track_commands, reward_scales):
     local_linvel = data.sensordata[localvel_id: localvel_id+3]
     lin_vel_error = np.sum(np.square(track_commands[:2] - local_linvel[:2]))
@@ -20,13 +36,30 @@ def reward_angvel_xy(data, gyro_id):
 
 def reward_base_height(data, trunk_id, base_height_target=0.304):
     base_height = data.xpos[trunk_id][-1]
-    return -np.square(base_height - base_height_target)
+    return -np.abs(base_height - base_height_target)
     
 def reward_motor_torque(torques):
-    return -np.sum(np.abs(torques))
+    return -np.sum(np.square(torques))
+
+def reward_energy(data, torques):
+    return -np.sum(abs(data.qvel[6:]) * abs(torques))
 
 def reward_action_smoothness(current_action, previous_action):
     return -np.sum(np.square(current_action - previous_action))
 
-# def reward_default_joint_pos(qpos, default_joint_position):
-#     return np.sum(np.abs(qpos - default_joint_position))
+def reward_joint_acceleration(data):
+    return -np.sum(np.square(data.qacc[6:]))
+
+def reward_feet_airtime(air_time, first_contact, track_commands):
+    cmd_norm = np.linalg.norm(track_commands)
+    rew_air_time = np.sum((air_time) * first_contact)
+    rew_air_time *= cmd_norm > 0.01
+    return rew_air_time
+
+def reward_default_pose(data, default_pose):
+    return -np.sum(np.square(data.qpos[7:] - default_pose))
+
+def reward_orientation(data):
+    w, x, y, z = data.qpos[3:7]
+    roll, pitch, _ = euler_from_quaternion(w, x, y, z)
+    return - np.square(roll) - np.square(pitch)

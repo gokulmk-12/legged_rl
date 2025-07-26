@@ -5,7 +5,7 @@
   <include file="common/materials.xml"/>
   <compiler angle="radian" meshdir="go2_meshes" autolimits="true"/>
 
-  <option cone="pyramidal" impratio="100" iterations="1" ls_iterations="5">
+  <option cone="pyramidal" timestep="0.004" iterations="1" ls_iterations="5" integrator="Euler">
     <flag eulerdamp="disable"/>
   </option>
 
@@ -256,8 +256,8 @@
     1 0 0 0 
     0. 0.8 -1.5 
     0. 0.8 -1.5 
-    0. 1.0 -1.5 
-    0. 1.0 -1.5"
-    ctrl="0. 0.8 -1.5 0. 0.8 -1.5 0. 1.0 -1.5 0. 1.0 -1.5"/>
+    0. 0.8 -1.5 
+    0. 0.8 -1.5"
+    ctrl="0. 0.8 -1.5 0. 0.8 -1.5 0. 0.8 -1.5 0. 0.8 -1.5"/>
   </keyframe>
 </mujoco>
