@@ -6,9 +6,10 @@ from leggedEnv import LeggedEnv
 env = LeggedEnv(robot_name="go2", task_name="walking", render_mode="human")
 obs, _ = env.reset()
 
-exp_no = 3
+exp_no = 5
 algo = "PPO"
 model_path = f"logs/{algo}_GO2_Exp{exp_no}/{algo.lower()}_go2_final"
+# model_path = f"logs/{algo}_GO2_Exp{exp_no}/{algo.lower()}_go2_checkpoint_6000000_steps"
 if algo == "PPO":
     model = PPO.load(model_path, env=env, device="cuda" if torch.cuda.is_available() else "cpu")
 elif algo == "SAC":

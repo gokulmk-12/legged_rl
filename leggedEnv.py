@@ -26,16 +26,16 @@ class LeggedEnv(gym.Env):
         super(LeggedEnv, self).__init__()
 
         self.robot_name = robot_name
-        xml_file = f"assets/{robot_name}.xml"
+        self.xml_file = f"assets/{robot_name}.xml"
 
-        self.model = mujoco.MjModel.from_xml_path(xml_file)
+        self.model = mujoco.MjModel.from_xml_path(self.xml_file)
         self.data = mujoco.MjData(self.model)
         self.key = self.model.key("home").id
         self.model.opt.timestep = 0.01
         self.ctrl_dt = 0.02
 
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(89,), dtype=np.float64
+            low=-np.inf, high=np.inf, shape=(45,), dtype=np.float64
         )
 
         # self.action_low = np.array(self.model.jnt_range[1:].T[0], dtype=np.float64)
@@ -50,8 +50,9 @@ class LeggedEnv(gym.Env):
             shape=(12, ), dtype=np.float64
         )
 
-        self.action = np.zeros(shape=(12))
-        self.previous_action = np.zeros(shape=(12))
+        self.action = np.array(self.model.keyframe("home").qpos[7:])
+        self.previous_action = np.array(self.model.keyframe("home").qpos[7:])
+        self.previous_previous_action = np.array(self.model.keyframe("home").qpos[7:])
 
         self.track_commands = np.array([0.5, 0.0, 0.0])
         self.max_episode_length = 1000
@@ -68,33 +69,34 @@ class LeggedEnv(gym.Env):
 
         self.reward_scales = {
             "tracking_lin_vel": 2.0,
-            "tracking_ang_vel": 1.0,
-            "lin_vel_z": 0.2,
+            "tracking_ang_vel": 0.8,
+            "lin_vel_z": 1.0,
             "angvel_xy": 0.2,
-            "base_height": 6.0,
+            "base_height": 10.0,
             "torques": 5e-4,
-            "action_rate": 0.2,
+            "action_rate": 0.5,
             "tracking_sigma": 0.25,
-            "acceleration": 5e-6,
-            "feet_air_time": 0.5,
-            "default_pose": 0.2,
-            "orientation": 1.0,
-            "energy": 1e-3,
+            "acceleration": 1e-6,
+            "feet_air_time": 0.2,
+            "default_pose": 0.5,
+            "orientation": 5.0,
+            "velocity": 1e-3,
+            "collision": 2.0
         }
 
         self.noise_scales = {
-            "gyro": 0.1,
-            "joint_pos": 0.03,
-            "joint_vel": 0.1,
+            "gyro": 0.2,
+            "joint_pos": 0.01,
+            "joint_vel": 1.5,
             "gravity": 0.05,
-            "linvel": 0.1,
+            "linvel": 0.01,
             "level": 1.0
         }
 
         console.print(f"[Mujoco-Env] [{timestamp()}] Welcome to Legged Mujoco", style="green")
         console.print(f"[Mujoco-Env] [{timestamp()}] Robot: {robot_name}, Task: {task_name}", style="green")
 
-        self.action_scale = 0.0
+        self.action_scale = 0.25
         self.roll_threshold = 15
         self.pitch_threshold = 15
 
@@ -126,6 +128,8 @@ class LeggedEnv(gym.Env):
         self.upvector_id = self.model.sensor("upvector").adr[0]
         self.global_linvel_id = self.model.sensor("global_linvel").adr[0]
         self.global_angvel_id = self.model.sensor("global_angvel").adr[0]
+
+        self.calf_geom_ids = [self.model.geom(f"{leg}_calf").id for leg in self.leg_names]
                         
     def _get_obs(self):
         gyro = self.data.sensordata[self.gyro_id:self.gyro_id+3]
@@ -172,25 +176,7 @@ class LeggedEnv(gym.Env):
             self.previous_action,
             self.track_commands,
         ])
-
-        accelerometer = self.data.sensordata[self.acc_id:self.acc_id+3]
-        global_angvel = self.data.sensordata[self.global_angvel_id:self.global_angvel_id+3]
-
-        obs = np.concatenate(
-            [
-                state,
-                gyro,
-                accelerometer,
-                gravity, 
-                linvel,
-                global_angvel,
-                joint_angles - self.default_joint_position,
-                joint_vel, 
-                self.last_contacts,
-                self.feet_air_time,
-            ]
-        )
-        return obs
+        return state
     
     def _get_termination(self, data):
         sleep_termination = data.xpos[self.trunk_id][-1] < 0.2
@@ -205,7 +191,8 @@ class LeggedEnv(gym.Env):
         self.episode = 0
         self.feet_air_time = np.zeros(4)
         self.last_contacts = np.ones(4, dtype=bool)
-        self.previous_action = np.zeros(shape=(12))
+        self.previous_action = np.array(self.model.keyframe("home").qpos[7:])
+        self.previous_previous_action = np.array(self.model.keyframe("home").qpos[7:])
 
         observation = self._get_obs()
         return observation, {}
@@ -214,6 +201,7 @@ class LeggedEnv(gym.Env):
         action_apply = self.previous_action if self.simulate_action_latency else action
         target_action = action_apply*self.action_scale + self.default_joint_position
         target_action = action_apply
+        self.action = action_apply
         self.data.ctrl[:] = target_action
         mujoco.mj_step(self.model, self.data)
         self.episode += 1
@@ -231,7 +219,7 @@ class LeggedEnv(gym.Env):
         bad_state = True if abs(roll) > np.deg2rad(self.roll_threshold) or abs(pitch) > np.deg2rad(self.pitch_threshold) else False
 
         observation = self._get_obs()
-        done = self._get_termination(self.data) or bad_state
+        done = self._get_termination(self.data)
 
         reward, info = self.reward(self.data, action, first_contact)
         terminated, truncated = False, False
@@ -242,15 +230,17 @@ class LeggedEnv(gym.Env):
         if self.episode >= self.max_episode_length:
             truncated, terminated = True, True
 
-        # if self.steps_until_next_cmd % 500_000 == 0:
-        #     self.sample_command()
+        if self.steps_until_next_cmd % 5_00_000 == 0:
+            self.sample_command()
 
         if self.render_mode == "human":
             self.render()
         
-        self.previous_action = action
+        self.previous_previous_action = self.previous_action
+        self.previous_action = self.action
         self.last_contacts = contact
         self.feet_air_time *= ~contact
+
         return observation, reward, terminated, truncated, info
     
     def reward(self, data, action, first_contact):
@@ -259,13 +249,15 @@ class LeggedEnv(gym.Env):
         base_linvelz        = reward_lin_vel_z(data, self.localvel_id)
         angvel_xy           = reward_angvel_xy(data, self.gyro_id)
         base_height         = reward_base_height(data, self.trunk_id)
-        joint_torque        = reward_motor_torque(data.qfrc_actuator[-12:])
-        action_smoothness   = reward_action_smoothness(action, self.previous_action)
+        joint_torque        = reward_motor_torque(data.actuator_force)
+        action_smoothness   = reward_action_smoothness(action, self.previous_action, self.previous_previous_action)
         joint_acceleration  = reward_joint_acceleration(data)
         feet_air_time       = reward_feet_airtime(self.feet_air_time, first_contact, self.track_commands)
         default_pose        = reward_default_pose(data, self.default_joint_position)
-        orientation         = reward_orientation(data)
-        energy              = reward_energy(data, data.qfrc_actuator[-12:])
+        orientation         = reward_orientation(data.sensordata[self.upvector_id: self.upvector_id+3])
+        joint_velocity      = reward_joint_velocity(data)
+        collision           = reward_collision(data, self.calf_geom_ids)
+        # energy              = reward_energy(data, data.qfrc_actuator[-12:])
 
         positive_rewards = self.reward_scales['tracking_lin_vel']    *linvel_track       + \
                 self.reward_scales['tracking_ang_vel']               *angvel_track       + \
@@ -279,9 +271,10 @@ class LeggedEnv(gym.Env):
                 self.reward_scales['action_rate']           *action_smoothness  + \
                 self.reward_scales['default_pose']          *default_pose       + \
                 self.reward_scales['orientation']           *orientation        + \
-                self.reward_scales['energy']                *energy
+                self.reward_scales['velocity']              *joint_velocity     + \
+                self.reward_scales['collision']             *collision
         
-        rewards = positive_rewards * np.exp(0.02 * negative_rewards)
+        rewards = positive_rewards + 0.05 * negative_rewards
 
         info = {
             "reward_tracking_linvel":   linvel_track,
@@ -295,14 +288,18 @@ class LeggedEnv(gym.Env):
             "reward_feet_airtime":      feet_air_time,
             "reward_default_pose":      default_pose,
             "reward_orientation":       orientation,
-            "reward_energy":            energy,
+            "reward_joint_velocity":    joint_velocity,
+            "reward_collision":         collision,
+            "total_positive_reward":    positive_rewards,
+            "total_negative_reward":    negative_rewards,
+            "total_reward":             rewards
         }
         return rewards, info
     
     def sample_command(self):
-        lin_vel_x = np.random.uniform(-1.0, 1.0)
-        lin_vel_y = np.random.uniform(0.1, 0.5)
-        self.track_commands = np.array([lin_vel_x, 0.0, 0.0])
+        lin_vel_x = np.random.normal(loc=0.3, scale=0.2)
+        lin_vel_y = np.random.normal(loc=0.0, scale=0.05)
+        self.track_commands = np.array([lin_vel_x, lin_vel_y, 0.0])
 
     def get_foot_contacts(self):
         touch_sensors = [self.model.sensor(f"{leg_name}_touch").adr[0] for leg_name in self.leg_names]

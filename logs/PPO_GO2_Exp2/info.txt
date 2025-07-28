@@ -29,6 +29,10 @@ Observation:
         ]
     )
 
+Action Space:
+    self.action_low = np.array([-0.3, 0.3, -1.9]*4)
+    self.action_high = np.array([0.3, 1.15, -1.2]*4)
+
 Reset Termination:
     |Roll|, |Pitch| > 15 degree, Sleep Termination < 0.2
 

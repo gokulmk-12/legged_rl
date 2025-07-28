@@ -1,75 +1,57 @@
 PPO Experiment 3
 
-Total Timesteps: 5M
-Number of parallel environments: 16
+Total Timesteps: 30M
+Number of parallel environments: 32
 
-Observation:
-    state = np.hstack([
-            noisy_linvel,
-            noisy_gyro,
-            noisy_gravity,
-            noisy_joint_angles - self.default_joint_position,
-            noisy_joint_vel,
-            self.previous_action,
-            self.track_commands,
-    ])
+Same Observations, Reset Termination as previous 
 
-    obs = np.concatenate(
-        [
-            state,
-            gyro,
-            accelerometer,
-            gravity, 
-            linvel,
-            global_angvel,
-            joint_angles - self.default_joint_position,
-            joint_vel, 
-            self.last_contacts,
-            self.feet_air_time,
-        ]
-    )
-
-Reset Termination:
-    |Roll|, |Pitch| > 15 degree, Sleep Termination < 0.2
+Action Space:
+    self.action_low = np.array([-0.2, 0.3, -1.9]*4)
+    self.action_high = np.array([0.2, 1.15, -1.2]*4)
 
 Rewards:
-    positive_rewards = self.reward_scales['tracking_lin_vel']    *linvel_track       + \
-            self.reward_scales['tracking_ang_vel']               *angvel_track       + \
-            self.reward_scales['feet_air_time']                  *feet_air_time
-    
-    negative_rewards = self.reward_scales['lin_vel_z']  *base_linvelz       + \
-            self.reward_scales['angvel_xy']             *angvel_xy          + \
-            self.reward_scales['base_height']           *base_height        + \
-            self.reward_scales['torques']               *joint_torque       + \
-            self.reward_scales['acceleration']          *joint_acceleration + \
-            self.reward_scales['action_rate']           *action_smoothness  + \
-            self.reward_scales['default_pose']          *default_pose       + \
-            self.reward_scales['orientation']           *orientation        + \
-            self.reward_scales['energy']                *energy
-    
-    rewards = positive_rewards * np.exp(0.02 * negative_rewards)
-
     self.reward_scales = {
-            "tracking_lin_vel": 2.0,
-            "tracking_ang_vel": 1.0,
-            "lin_vel_z": 0.2,
-            "angvel_xy": 0.2,
-            "base_height": 6.0,
-            "torques": 5e-4,
-            "action_rate": 0.2,
-            "tracking_sigma": 0.25,
-            "acceleration": 5e-6,
-            "feet_air_time": 0.5,
-            "default_pose": 0.2,
-            "orientation": 1.0,
-            "energy": 1e-3,
-        }
+        "tracking_lin_vel": 2.0,
+        "tracking_ang_vel": 0.5,
+        "lin_vel_z": 0.2,
+        "angvel_xy": 0.2,
+        "base_height": 6.0,
+        "torques": 2e-4,
+        "action_rate": 0.2,
+        "tracking_sigma": 0.25,
+        "acceleration": 2e-6,
+        "feet_air_time": 0.5,
+        "default_pose": 0.2,
+        "orientation": 1.0,
+        "energy": 5e-4,
+    }
+
+PPO Hyperparameters:
+    model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            tensorboard_log=log_dir,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            n_steps=2048 // num_envs,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            ent_coef=0.02,
+            max_grad_norm=0.5,
+            learning_rate=2e-4,
+            clip_range=0.2,
+            vf_coef=1.0,
+            clip_range_vf=0.2
+        )
 
 What I observed ?
-    * Still jittery motion, it tried to gallop again, but too much Termination
-    * Good progress, but the base stability has to be considered. 
-    * Unstable stable baseline 3 training
+    * Still accelerated motion, it tried to gallop, but the pitch was signifcantly higher which led it terminate
+    * Good progress, but the base stability is weak. 
+    * Stable Baselines3 Nan termination is very often now
+    * Seems like it drifted way from experiment 2, need to reduce some params which were increased
 
 Changes
-    * decreasing entropy coefficient in PPO to 0.025
-    * decreasing learning rate to 1e-4
+    * increased learning_rate to 3e-4
+    * decreased acceleration scale to 5e-7

@@ -36,11 +36,11 @@ def make_env(robot_name="go2", render_mode="non-human", rank=0):
     return _init
 
 def train():
-    exp_no = 3
+    exp_no = 5
     log_dir = f"logs/PPO_GO2_Exp{exp_no}"
     os.makedirs(log_dir, exist_ok=True)
 
-    num_envs = 16
+    num_envs = 32
     
     if num_envs == 1:
         env = DummyVecEnv([make_env()])
@@ -74,11 +74,11 @@ def train():
             n_epochs=10,
             gamma=0.99,
             gae_lambda=0.95,
-            ent_coef=0.025,
+            ent_coef=0.01,
             max_grad_norm=0.5,
-            learning_rate=1e-4,
+            learning_rate=3e-4,
             clip_range=0.2,
-            vf_coef=0.5,
+            vf_coef=1.0,
             clip_range_vf=0.2
         )
         model.set_logger(new_logger)
@@ -99,7 +99,7 @@ def train():
     ])
 
     model.learn(
-        total_timesteps=5_000_000,
+        total_timesteps=30_000_000,
         progress_bar=True,
         reset_num_timesteps=False,
         callback=callback_list

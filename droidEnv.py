@@ -2,16 +2,9 @@ import mujoco
 import numpy as np
 import mujoco_viewer
 import gymnasium as gym
-from ml_collections import config_dict
 
 from datetime import datetime
 from rich.console import Console
-
-# def default_config() -> config_dict.ConfigDict:
-#     return config_dict.create(
-#         hip_yaw_limits = [-0.523599, 0.523599]
-#         hip_roll_limits = [-0.436332, 0.436332]
-#     )
 
 def timestamp():
     return datetime.now().strftime("%H:%M:%S")

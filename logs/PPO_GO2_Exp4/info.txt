@@ -1,0 +1,69 @@
+PPO Experiment 4
+
+Total Timesteps: 5M
+Number of parallel environments: 32
+
+Same Observations, Reset Termination as previous 
+
+Action Space:
+    self.action_low = np.array([-0.3, 0.3, -1.9]*4)
+    self.action_high = np.array([0.3, 1.15, -1.2]*4)
+
+self.reward_scales = {
+            "tracking_lin_vel": 2.0,
+            "tracking_ang_vel": 0.5,
+            "lin_vel_z": 0.2,
+            "angvel_xy": 0.2,
+            "base_height": 6.0,
+            "torques": 2e-4,
+            "action_rate": 0.2,
+            "tracking_sigma": 0.25,
+            "acceleration": 5e-7,
+            "feet_air_time": 0.5,
+            "default_pose": 0.2,
+            "orientation": 1.0,
+            "energy": 5e-4,
+        }
+
+PPO Hyperparameters:
+    model = PPO(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            tensorboard_log=log_dir,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            n_steps=2048 // num_envs,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.99,
+            gae_lambda=0.95,
+            ent_coef=0.02,
+            max_grad_norm=0.5,
+            learning_rate=3e-4,
+            clip_range=0.2,
+            vf_coef=1.0,
+            clip_range_vf=0.2
+        )
+
+What I observed ?
+    * I could see some visible gait appearing, but its still noisy
+    * Termination still happened
+    * But good progress 
+
+Changes
+    * Fix PPO Hyperparameters
+    * Changing the noise levels in observation according to "Learning to walk in minutes paper"
+
+        self.noise_scales = {
+            "gyro": 0.2,
+            "joint_pos": 0.01,
+            "joint_vel": 1.5,
+            "gravity": 0.05,
+            "linvel": 0.01,
+            "level": 1.0
+        }
+    
+    * Replaced enery reward with joint_vel reward, scale: 1e-3
+    * increased orientation scale to 5 and removed bad_state termination 
+    * reducing entropy coefficient to 0.01
+    
